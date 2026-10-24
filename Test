@@ -1,0 +1,601 @@
+-- Script taken from https://xenoscripts.com website --
+
+--[[
+    ELITE SCRIPTS  ·  MURDER MYSTERY 2
+    Fluent UI 
+    Role ESP (Murderer/Sheriff/Innocent) · Coin ESP · Gun Drop ESP
+    Aimbot / Silent / Knife Aura · Auto Farm · Auto Shoot · Auto Stab
+    TP to roles · Fly / Noclip / Speed · FullBright · Discord LED
+    Customize tab — accent + theme colors
+    Keyless · UNC universal
+]]
+
+-- ======================== UNC / EXECUTOR COMPAT ========================
+local function safeHttpGet(url)
+    local ok, res = pcall(function()
+        if syn and syn.request then
+            local r = syn.request({Url = url, Method = "GET"})
+            return r.Body
+        elseif http and http.request then
+            local r = http.request({Url = url, Method = "GET"})
+            return r.Body
+        elseif request then
+            local r = request({Url = url, Method = "GET"})
+            return r.Body
+        elseif http_request then
+            local r = http_request({Url = url, Method = "GET"})
+            return r.Body
+        elseif fluxus and fluxus.request then
+            local r = fluxus.request({Url = url, Method = "GET"})
+            return r.Body
+        else
+            return game:HttpGet(url)
+        end
+    end)
+    if ok and res then return res end
+    return game:HttpGet(url)
+end
+
+local Fluent = loadstring(safeHttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+local SaveManager = loadstring(safeHttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
+local InterfaceManager = loadstring(safeHttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
+
+if not Drawing then
+    pcall(function() Drawing = getgenv().Drawing or Drawing end)
+end
+if not Drawing then
+    warn("[ELITE SCRIPTS] Drawing missing — ESP disabled on this executor")
+end
+
+local function safeDrawing(class)
+    if not Drawing then return nil end
+    local ok, obj = pcall(function() return Drawing.new(class) end)
+    if ok then return obj end
+    return nil
+end
+
+local function safeMousemove(x, y)
+    if mousemoverel then
+        pcall(mousemoverel, x, y)
+    elseif Input and Input.MouseMove then
+        pcall(Input.MouseMove, x, y)
+    end
+end
+
+local function safeMouse1Click()
+    if mouse1click then
+        pcall(mouse1click)
+    elseif mouse1press and mouse1release then
+        pcall(mouse1press)
+        task.wait(0.02)
+        pcall(mouse1release)
+    end
+end
+
+-- ======================== SERVICES ========================
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace        = game:GetService("Workspace")
+local Lighting         = game:GetService("Lighting")
+local TweenService     = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera      = Workspace.CurrentCamera
+local Mouse       = LocalPlayer:GetMouse()
+
+-- ======================== SETTINGS ========================
+local S = {
+    -- Aim
+    Aimbot        = false,
+    SilentAim     = false,
+    AlwaysOn      = false,
+    AimKey        = Enum.UserInputType.MouseButton2,
+    FOV           = 130,
+    Smoothness    = 0.14,
+    AimPart       = "Head",
+    Prediction    = true,
+    PredMult      = 0.09,
+    ShowFOV       = true,
+    FOVColor      = Color3.fromRGB(188, 78, 255),
+    FOVRainbow    = false,
+    TargetRole    = "Murderer", -- Murderer / Sheriff / Any
+
+    -- Combat MM2
+    KnifeAura     = false,
+    AuraDist      = 12,
+    AutoStab      = false,
+    AutoShoot     = false,
+    AutoThrow     = false,
+    KillAll       = false,
+
+    -- ESP
+    ESP           = true,
+    RoleESP       = true,
+    Box           = true,
+    Skeleton      = false,
+    Tracer        = true,
+    Name          = true,
+    Distance      = true,
+    Health        = true,
+    CoinESP       = true,
+    GunESP        = true,
+    MaxDist       = 2500,
+    MurdererColor = Color3.fromRGB(255, 55, 55),
+    SheriffColor  = Color3.fromRGB(55, 140, 255),
+    InnocentColor = Color3.fromRGB(80, 220, 120),
+    CoinColor     = Color3.fromRGB(255, 215, 60),
+    GunColor      = Color3.fromRGB(100, 180, 255),
+
+    -- Farm
+    AutoFarm      = false,
+    FarmSpeed     = 28,
+    FarmMode      = "Nearest", -- Nearest / Random
+    AutoGrabGun   = true,
+    AutoOpenChest = false,
+
+    -- Movement
+    Fly           = false,
+    FlySpeed      = 70,
+    Noclip        = false,
+    Speed         = false,
+    WalkSpeed     = 26,
+    InfiniteJump  = false,
+
+    -- World
+    FullBright    = false,
+    NoFog         = false,
+
+    -- UI / Brand
+    DiscordLED       = true,
+    DiscordLEDColor  = Color3.fromRGB(188, 78, 255),
+    DiscordLink      = "https://discord.gg/JyHTa3M7h",
+    AccentColor      = Color3.fromRGB(188, 78, 255),
+    ThemeName        = "Darker",
+}
+
+-- ======================== STATE ========================
+local HoldingAim = false
+local espCache   = {}
+local coinCache  = {}
+local gunCache   = {}
+local flyBV, flyBG
+local origAmbient, origBrightness, origFog
+local lastAura   = 0
+local lastFarm   = 0
+local roleCache  = {} -- [player] = "Murderer"|"Sheriff"|"Innocent"|"None"
+
+-- Drawing objects
+local FOVCircle = safeDrawing("Circle")
+if FOVCircle then
+    FOVCircle.Visible = false
+    FOVCircle.Thickness = 1.4
+    FOVCircle.Filled = false
+    FOVCircle.NumSides = 64
+    FOVCircle.Transparency = 0.75
+    FOVCircle.Color = S.FOVColor
+    FOVCircle.Radius = S.FOV
+end
+
+local DiscordLEDGlow = safeDrawing("Text")
+local DiscordLEDText = safeDrawing("Text")
+local DiscordLEDLine = safeDrawing("Line")
+if DiscordLEDGlow then
+    DiscordLEDGlow.Text = "discord.gg/JyHTa3M7h"
+    DiscordLEDGlow.Size = 13
+    DiscordLEDGlow.Center = true
+    DiscordLEDGlow.Outline = false
+    DiscordLEDGlow.Color = S.DiscordLEDColor
+    DiscordLEDGlow.Transparency = 0.72
+    DiscordLEDGlow.Visible = S.DiscordLED
+end
+if DiscordLEDText then
+    DiscordLEDText.Text = "discord.gg/JyHTa3M7h"
+    DiscordLEDText.Size = 12
+    DiscordLEDText.Center = true
+    DiscordLEDText.Outline = true
+    DiscordLEDText.Color = S.DiscordLEDColor
+    DiscordLEDText.Transparency = 1
+    DiscordLEDText.Visible = S.DiscordLED
+end
+if DiscordLEDLine then
+    DiscordLEDLine.Thickness = 1
+    DiscordLEDLine.Color = S.DiscordLEDColor
+    DiscordLEDLine.Transparency = 0.6
+    DiscordLEDLine.Visible = S.DiscordLED
+end
+
+-- ======================== ROLE DETECTION ========================
+local function getRole(plr)
+    if not plr or plr == LocalPlayer then return "None" end
+    if roleCache[plr] and tick() - (roleCache[plr]._t or 0) < 0.8 then
+        return roleCache[plr].role
+    end
+
+    local role = "Innocent"
+    local char = plr.Character
+    if not char then
+        roleCache[plr] = { role = "None", _t = tick() }
+        return "None"
+    end
+
+    -- Common MM2 patterns: Knife = Murderer, Gun/Revolver = Sheriff
+    local hasKnife, hasGun = false, false
+    for _, tool in ipairs(char:GetChildren()) do
+        if tool:IsA("Tool") then
+            local n = string.lower(tool.Name)
+            if n:find("knife") or n:find("blade") or n:find("dagger") or n:find("sword") then
+                hasKnife = true
+            end
+            if n:find("gun") or n:find("revolver") or n:find("pistol") or n:find("sheriff") then
+                hasGun = true
+            end
+        end
+    end
+    -- Also check backpack
+    local bp = plr:FindFirstChild("Backpack")
+    if bp then
+        for _, tool in ipairs(bp:GetChildren()) do
+            if tool:IsA("Tool") then
+                local n = string.lower(tool.Name)
+                if n:find("knife") or n:find("blade") or n:find("dagger") then hasKnife = true end
+                if n:find("gun") or n:find("revolver") or n:find("pistol") then hasGun = true end
+            end
+        end
+    end
+
+    -- Value / attribute fallbacks used by some MM2 forks
+    local ok, val = pcall(function()
+        local r = plr:FindFirstChild("Role") or plr:FindFirstChild("role") or char:FindFirstChild("Role")
+        if r and (r:IsA("StringValue") or r:IsA("StringValue")) then
+            return tostring(r.Value)
+        end
+        if plr:GetAttribute("Role") then return tostring(plr:GetAttribute("Role")) end
+        if char:GetAttribute("Role") then return tostring(char:GetAttribute("Role")) end
+        return nil
+    end)
+    if ok and val then
+        local l = string.lower(val)
+        if l:find("murder") then role = "Murderer"
+        elseif l:find("sheriff") or l:find("hero") then role = "Sheriff"
+        elseif l:find("innocent") then role = "Innocent"
+        end
+    else
+        if hasKnife then role = "Murderer"
+        elseif hasGun then role = "Sheriff"
+        else role = "Innocent"
+        end
+    end
+
+    roleCache[plr] = { role = role, _t = tick() }
+    return role
+end
+
+local function getRoleColor(role)
+    if role == "Murderer" then return S.MurdererColor
+    elseif role == "Sheriff" then return S.SheriffColor
+    else return S.InnocentColor
+    end
+end
+
+-- ======================== HELPERS ========================
+local function getChar(plr)
+    return plr and plr.Character
+end
+
+local function getHRP(plr)
+    local c = getChar(plr)
+    return c and c:FindFirstChild("HumanoidRootPart")
+end
+
+local function getHum(plr)
+    local c = getChar(plr)
+    return c and c:FindFirstChildOfClass("Humanoid")
+end
+
+local function isAlive(plr)
+    local h = getHum(plr)
+    return h and h.Health > 0
+end
+
+local function worldToScreen(pos)
+    local v, on = Camera:WorldToViewportPoint(pos)
+    return Vector2.new(v.X, v.Y), on, v.Z
+end
+
+local function getClosestInFOV(roleFilter)
+    local best, bestDist = nil, S.FOV
+    local mousePos = Vector2.new(Mouse.X, Mouse.Y)
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and isAlive(plr) then
+            local role = getRole(plr)
+            if roleFilter == "Any" or role == roleFilter then
+                local hrp = getHRP(plr)
+                if hrp then
+                    local part = hrp
+                    if S.AimPart == "Head" then
+                        local head = getChar(plr):FindFirstChild("Head")
+                        if head then part = head end
+                    end
+                    local screen, onScreen = worldToScreen(part.Position)
+                    if onScreen then
+                        local d = (screen - mousePos).Magnitude
+                        if d < bestDist then
+                            bestDist = d
+                            best = part
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function aimAt(part)
+    if not part then return end
+    local pos = part.Position
+    if S.Prediction and part.Parent then
+        local hrp = part.Parent:FindFirstChild("HumanoidRootPart") or part
+        local vel = hrp.AssemblyLinearVelocity or hrp.Velocity or Vector3.zero
+        pos = pos + vel * S.PredMult
+    end
+    local screen, on = worldToScreen(pos)
+    if not on then return end
+    local mousePos = Vector2.new(Mouse.X, Mouse.Y)
+    local delta = (screen - mousePos) * math.clamp(1 - S.Smoothness, 0.05, 1)
+    safeMousemove(delta.X, delta.Y)
+end
+
+-- ======================== ESP SYSTEM ========================
+local function clearESP(plr)
+    local c = espCache[plr]
+    if not c then return end
+    for _, obj in pairs(c) do
+        pcall(function() if obj.Remove then obj:Remove() end end)
+    end
+    espCache[plr] = nil
+end
+
+local function ensureESP(plr)
+    if espCache[plr] then return espCache[plr] end
+    local c = {
+        box = safeDrawing("Square"),
+        name = safeDrawing("Text"),
+        dist = safeDrawing("Text"),
+        health = safeDrawing("Line"),
+        tracer = safeDrawing("Line"),
+        skel = {},
+    }
+    if c.box then
+        c.box.Thickness = 1.3
+        c.box.Filled = false
+        c.box.Transparency = 1
+    end
+    if c.name then
+        c.name.Size = 13
+        c.name.Center = true
+        c.name.Outline = true
+        c.name.Transparency = 1
+    end
+    if c.dist then
+        c.dist.Size = 12
+        c.dist.Center = true
+        c.dist.Outline = true
+        c.dist.Transparency = 1
+    end
+    if c.health then
+        c.health.Thickness = 2.2
+        c.health.Transparency = 1
+    end
+    if c.tracer then
+        c.tracer.Thickness = 1.2
+        c.tracer.Transparency = 0.85
+    end
+    for i = 1, 12 do
+        local ln = safeDrawing("Line")
+        if ln then
+            ln.Thickness = 1.1
+            ln.Transparency = 1
+            c.skel[i] = ln
+        end
+    end
+    espCache[plr] = c
+    return c
+end
+
+local function updatePlayerESP()
+    if not S.ESP then
+        for plr in pairs(espCache) do clearESP(plr) end
+        return
+    end
+    local myHRP = getHRP(LocalPlayer)
+    local myPos = myHRP and myHRP.Position or Camera.CFrame.Position
+    local bottom = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr == LocalPlayer then continue end
+        local char = getChar(plr)
+        local hrp = getHRP(plr)
+        local hum = getHum(plr)
+        if not (char and hrp and hum and hum.Health > 0) then
+            clearESP(plr)
+            continue
+        end
+
+        local dist = (hrp.Position - myPos).Magnitude
+        if dist > S.MaxDist then
+            clearESP(plr)
+            continue
+        end
+
+        local role = getRole(plr)
+        local col = getRoleColor(role)
+        local c = ensureESP(plr)
+
+        local head = char:FindFirstChild("Head")
+        local topPos = head and head.Position or (hrp.Position + Vector3.new(0, 2.2, 0))
+        local bottomPos = hrp.Position - Vector3.new(0, 3, 0)
+
+        local top2d, on1, z1 = worldToScreen(topPos)
+        local bot2d, on2 = worldToScreen(bottomPos)
+        local hrp2d = worldToScreen(hrp.Position)
+
+        if not (on1 and on2) then
+            if c.box then c.box.Visible = false end
+            if c.name then c.name.Visible = false end
+            if c.dist then c.dist.Visible = false end
+            if c.health then c.health.Visible = false end
+            if c.tracer then c.tracer.Visible = false end
+            for _, ln in pairs(c.skel) do if ln then ln.Visible = false end end
+            continue
+        end
+
+        local height = math.abs(bot2d.Y - top2d.Y)
+        local width = height * 0.55
+        local boxPos = Vector2.new(top2d.X - width / 2, top2d.Y)
+
+        if S.Box and c.box then
+            c.box.Visible = true
+            c.box.Position = boxPos
+            c.box.Size = Vector2.new(width, height)
+            c.box.Color = col
+        elseif c.box then
+            c.box.Visible = false
+        end
+
+        if S.Name and c.name then
+            c.name.Visible = true
+            c.name.Position = Vector2.new(top2d.X, top2d.Y - 16)
+            local roleTag = S.RoleESP and (" [" .. role .. "]") or ""
+            c.name.Text = plr.Name .. roleTag
+            c.name.Color = col
+        elseif c.name then
+            c.name.Visible = false
+        end
+
+        if S.Distance and c.dist then
+            c.dist.Visible = true
+            c.dist.Position = Vector2.new(bot2d.X, bot2d.Y + 2)
+            c.dist.Text = string.format("%.0fm", dist)
+            c.dist.Color = col
+        elseif c.dist then
+            c.dist.Visible = false
+        end
+
+        if S.Health and c.health then
+            local pct = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+            c.health.Visible = true
+            c.health.From = Vector2.new(boxPos.X - 4, bot2d.Y)
+            c.health.To = Vector2.new(boxPos.X - 4, bot2d.Y - height * pct)
+            c.health.Color = Color3.fromRGB(255 * (1 - pct), 255 * pct, 40)
+        elseif c.health then
+            c.health.Visible = false
+        end
+
+        if S.Tracer and c.tracer then
+            c.tracer.Visible = true
+            c.tracer.From = bottom
+            c.tracer.To = hrp2d
+            c.tracer.Color = col
+        elseif c.tracer then
+            c.tracer.Visible = false
+        end
+
+        -- simple skeleton
+        if S.Skeleton then
+            local bones = {
+                {"Head", "UpperTorso"}, {"UpperTorso", "LowerTorso"},
+                {"UpperTorso", "LeftUpperArm"}, {"LeftUpperArm", "LeftLowerArm"}, {"LeftLowerArm", "LeftHand"},
+                {"UpperTorso", "RightUpperArm"}, {"RightUpperArm", "RightLowerArm"}, {"RightLowerArm", "RightHand"},
+                {"LowerTorso", "LeftUpperLeg"}, {"LeftUpperLeg", "LeftLowerLeg"}, {"LeftLowerLeg", "LeftFoot"},
+                {"LowerTorso", "RightUpperLeg"}, {"RightUpperLeg", "RightLowerLeg"}, {"RightLowerLeg", "RightFoot"},
+            }
+            -- R6 fallback
+            if not char:FindFirstChild("UpperTorso") then
+                bones = {
+                    {"Head", "Torso"}, {"Torso", "Left Arm"}, {"Torso", "Right Arm"},
+                    {"Torso", "Left Leg"}, {"Torso", "Right Leg"},
+                }
+            end
+            for i, pair in ipairs(bones) do
+                local a = char:FindFirstChild(pair[1])
+                local b = char:FindFirstChild(pair[2])
+                local ln = c.skel[i]
+                if a and b and ln then
+                    local p1, o1 = worldToScreen(a.Position)
+                    local p2, o2 = worldToScreen(b.Position)
+                    if o1 and o2 then
+                        ln.Visible = true
+                        ln.From = p1
+                        ln.To = p2
+                        ln.Color = col
+                    else
+                        ln.Visible = false
+                    end
+                elseif ln then
+                    ln.Visible = false
+                end
+            end
+        else
+            for _, ln in pairs(c.skel) do if ln then ln.Visible = false end end
+        end
+    end
+
+    -- cleanup left players
+    for plr in pairs(espCache) do
+        if not Players:FindFirstChild(plr.Name) then
+            clearESP(plr)
+        end
+    end
+end
+
+-- Coin + Gun ESP (simple)
+local function updateWorldESP()
+    -- Coins
+    if S.CoinESP then
+        for _, obj in ipairs(Workspace:GetDescendants()) do
+            if obj:IsA("BasePart") and (string.lower(obj.Name):find("coin") or obj.Name == "CoinContainer") then
+                if not coinCache[obj] then
+                    local t = safeDrawing("Text")
+                    if t then
+                        t.Size = 12
+                        t.Center = true
+                        t.Outline = true
+                        t.Color = S.CoinColor
+                        t.Text = "COIN"
+                        coinCache[obj] = t
+                    end
+                end
+                local t = coinCache[obj]
+                if t then
+                    local p, on = worldToScreen(obj.Position)
+                    t.Visible = on
+                    if on then t.Position = p end
+                end
+            end
+        end
+    else
+        for obj, t in pairs(coinCache) do
+            pcall(function() t:Remove() end)
+            coinCache[obj] = nil
+        end
+    end
+
+    -- Dropped gun
+    if S.GunESP then
+        for _, obj in ipairs(Workspace:GetDescendants()) do
+            if obj:IsA("BasePart") or obj:IsA("Model") then
+                local n = string.lower(obj.Name)
+                if n:find("gun") or n:find("revolver") or n == "gundrop" then
+                    local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart")
+                    if part and not gunCache[obj] then
+                        local t = safeDrawing("Text")
+                        if t then
+                            t.Size = 13
+                            t.Center = true
+                            t.Outline = true
+                            t.Color = S.GunColor
+                            t.Text = "GUN"
+       
